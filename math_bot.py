@@ -106,11 +106,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return ConversationHandler.END
 
     await update.message.reply_text(
-        "🏫 *Matematika 10-11 sinf boti*\n\n"
-        "Kirish uchun sinf kodini yuboring:",
+        "🏫 *Biz bilan A+ natijaga erishing!*\n\n"
+        "Ismingizni kiriting:",
         parse_mode="Markdown"
     )
-    return WAIT_STUDENT_CODE
+    return WAIT_STUDENT_NAME
 
 # ============================================================
 #  O'QUVCHI KIRISHI
@@ -835,7 +835,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if is_student(user_id, data):
         await update.message.reply_text("Menyu:", reply_markup=student_menu())
     else:
-        await update.message.reply_text("Kirish uchun sinf kodini yuboring:")
+        await update.message.reply_text("Ismingizni kiriting:")
 
 # ============================================================
 #  ASOSIY
