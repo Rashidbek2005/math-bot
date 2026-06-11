@@ -246,75 +246,111 @@ async def add_video_topic(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def add_test_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    context.user_data["test_questions"] = []
     await query.message.reply_text(
-        "📝 Test savolini kiriting:\n(Tugatish uchun /done yuboring)"
+        "📝 *Test yaratish*\n\n"
+        "Avval test nomini kiriting:\n"
+        "Masalan: _Planimetriya — Burchaklar_",
+        parse_mode="Markdown"
     )
     return ADD_TEST_QUESTION
 
 async def add_test_question(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.message.text.strip() == "/done":
-        if not context.user_data.get("test_questions"):
-            await update.message.reply_text("❌ Kamida 1 ta savol kiriting!")
-            return ADD_TEST_QUESTION
-
-        data = load_data()
-        test = {
-            "id": len(data["tests"]) + 1,
-            "title": f"Test #{len(data['tests']) + 1}",
-            "questions": context.user_data["test_questions"]
-        }
-        data["tests"].append(test)
-        save_data(data)
-
+    if not context.user_data.get("test_title"):
+        context.user_data["test_title"] = update.message.text.strip()
         await update.message.reply_text(
-            f"✅ Test yaratildi! {len(test['questions'])} ta savol.",
-            reply_markup=teacher_menu()
+            "✅ Nom qabul qilindi!\n\n"
+            "Endi barcha savollarni *bir xabarda* yuboring:\n\n"
+            "📋 *Format:*\n"
+            "```\n"
+            "1. Savol matni\n"
+            "A) variant\nB) variant\nC) variant\nD) variant\n"
+            "To'g'ri: A\n\n"
+            "2. Savol matni\n"
+            "A) variant\nB) variant\nC) variant\nD) variant\n"
+            "To'g'ri: B\n"
+            "```",
+            parse_mode="Markdown"
         )
-
-        for uid in data["students"]:
-            try:
-                await context.bot.send_message(
-                    chat_id=int(uid),
-                    text=f"📝 *Yangi test qo'shildi!*\n{test['title']} — {len(test['questions'])} ta savol\n\nBotdan kirib ishlang!",
-                    parse_mode="Markdown"
-                )
-            except:
-                pass
-
-        return ConversationHandler.END
-
-    context.user_data["current_question"] = update.message.text.strip()
-    await update.message.reply_text(
-        "Variantlarni kiriting (har birini yangi qatorga):\n"
-        "Misol:\nA) 1\nB) 2\nC) 3\nD) 4"
-    )
+        return ADD_TEST_OPTIONS
     return ADD_TEST_OPTIONS
 
 async def add_test_options(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data["current_options"] = update.message.text.strip()
-    await update.message.reply_text("To'g'ri javobni kiriting (A, B, C yoki D):")
-    return ADD_TEST_ANSWER
+    text = update.message.text.strip()
+    questions = []
+    blocks = []
+    current = []
+
+    for line in text.split("\n"):
+        line = line.strip()
+        if not line:
+            if current:
+                blocks.append(current)
+                current = []
+        else:
+            current.append(line)
+    if current:
+        blocks.append(current)
+
+    for block in blocks:
+        if not block:
+            continue
+        q_text = ""
+        options_lines = []
+        answer = ""
+        for line in block:
+            if line and line[0].isdigit() and "." in line[:3]:
+                q_text = line.split(".", 1)[1].strip()
+            elif line.upper().startswith(("A)", "B)", "C)", "D)")):
+                options_lines.append(line)
+            elif "to'g'ri" in line.lower() or "togri" in line.lower():
+                parts = line.split(":")
+                if len(parts) > 1:
+                    answer = parts[1].strip().upper()
+
+        if q_text and options_lines and answer:
+            questions.append({
+                "q": q_text,
+                "options": "\n".join(options_lines),
+                "answer": answer
+            })
+
+    if not questions:
+        await update.message.reply_text(
+            "❌ Format noto'g'ri. Qaytadan yuboring:\n\n"
+            "1. Savol\nA) ...\nB) ...\nC) ...\nD) ...\nTo'g'ri: A"
+        )
+        return ADD_TEST_OPTIONS
+
+    data = load_data()
+    test = {
+        "id": len(data["tests"]) + 1,
+        "title": context.user_data.get("test_title", f"Test #{len(data['tests'])+1}"),
+        "questions": questions
+    }
+    data["tests"].append(test)
+    save_data(data)
+    context.user_data.pop("test_title", None)
+
+    await update.message.reply_text(
+        f"✅ *{test['title']}* yaratildi!\n{len(questions)} ta savol yuklandi.",
+        parse_mode="Markdown",
+        reply_markup=teacher_menu()
+    )
+
+    for uid in data["students"]:
+        try:
+            await context.bot.send_message(
+                chat_id=int(uid),
+                text=f"📝 *Yangi test!*\n*{test['title']}* — {len(questions)} ta savol\n\nBotdan kirib ishlang!",
+                parse_mode="Markdown"
+            )
+        except:
+            pass
+
+    return ConversationHandler.END
 
 async def add_test_answer(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    answer = update.message.text.strip().upper()
-    if answer not in ["A", "B", "C", "D"]:
-        await update.message.reply_text("❌ Faqat A, B, C yoki D kiriting:")
-        return ADD_TEST_ANSWER
-
-    question = {
-        "q": context.user_data["current_question"],
-        "options": context.user_data["current_options"],
-        "answer": answer
-    }
-    context.user_data["test_questions"].append(question)
-
-    count = len(context.user_data["test_questions"])
-    await update.message.reply_text(
-        f"✅ {count}-savol qo'shildi!\n\n"
-        "Keyingi savolni kiriting yoki /done yuboring:"
-    )
-    return ADD_TEST_QUESTION
+    return ConversationHandler.END
 
 # ============================================================
 #  CALLBACK — O'QITUVCHI
@@ -583,10 +619,7 @@ def main():
             ADD_VIDEO_TITLE: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_video_title)],
             ADD_VIDEO_LINK: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_video_link)],
             ADD_VIDEO_TOPIC: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_video_topic)],
-            ADD_TEST_QUESTION: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, add_test_question),
-                CommandHandler("done", add_test_question),
-            ],
+            ADD_TEST_QUESTION: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_test_question)],
             ADD_TEST_OPTIONS: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_test_options)],
             ADD_TEST_ANSWER: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_test_answer)],
         },
