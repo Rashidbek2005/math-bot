@@ -807,19 +807,27 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("🤖 Savolingiz qabul qilindi, javob tayyorlanmoqda...")
 
         try:
-            import anthropic
-            client = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY", ""))
-            response = client.messages.create(
-                model="claude-sonnet-4-20250514",
-                max_tokens=1000,
-                messages=[{
-                    "role": "user",
-                    "content": f"Sen matematika o'qituvchisissan. O'quvchi savol berdi. O'zbek tilida, sodda va tushunarli tushuntir, misollar kel: {text}"
-                }]
+            import urllib.request
+            import json as _json
+            groq_key = os.environ.get("GROQ_API_KEY", "")
+            payload = _json.dumps({
+                "model": "llama3-8b-8192",
+                "messages": [
+                    {"role": "system", "content": "Sen matematika o'qituvchisissan. Faqat o'zbek tilida, sodda va tushunarli tushuntir, misollar keltir."},
+                    {"role": "user", "content": text}
+                ],
+                "max_tokens": 1000
+            }).encode("utf-8")
+            req = urllib.request.Request(
+                "https://api.groq.com/openai/v1/chat/completions",
+                data=payload,
+                headers={"Content-Type": "application/json", "Authorization": f"Bearer {groq_key}"}
             )
-            answer = response.content[0].text
+            with urllib.request.urlopen(req) as resp:
+                result = _json.loads(resp.read().decode())
+            answer = result["choices"][0]["message"]["content"]
         except Exception as e:
-            answer = f"AI hozir ishlamayapti. Keyinroq urinib ko'ring."
+            answer = "AI hozir ishlamayapti. Keyinroq urinib ko'ring."
 
         await update.message.reply_text(answer, reply_markup=student_menu())
         return
