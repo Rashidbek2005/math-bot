@@ -64,6 +64,8 @@ def teacher_menu():
          InlineKeyboardButton("🎬 Videolar", callback_data="view_videos")],
         [InlineKeyboardButton("📊 Test natijalari", callback_data="test_results"),
          InlineKeyboardButton("🗑 Testlarni tozala", callback_data="clear_tests")],
+        [InlineKeyboardButton("👤 O'quvchi o'chirish", callback_data="delete_student"),
+         InlineKeyboardButton("🗑 O'quvchilarni tozala", callback_data="clear_students")],
     ]
     return InlineKeyboardMarkup(keyboard)
 
@@ -107,8 +109,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return ConversationHandler.END
 
     await update.message.reply_text(
-        "🏫 *Matematika 10-11 sinf*\n\n"
-        "Ro'yxatdan o'tish uchun ismingizni kiriting:",
+        "👋 *RASHmath* ga xush kelibsiz!\n\n"
+        "🎯 Matematikani o'rgan, *A+* ga erish!\n\n"
+        "Ro'yxatdan o'tish uchun *ismingizni* kiriting:\n"
+        "_(Masalan: Abdulloh)_",
         parse_mode="Markdown"
     )
     return WAIT_FIRST_NAME
@@ -116,20 +120,46 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ============================================================
 #  RO'YXATDAN O'TISH
 # ============================================================
+INVALID_WORDS = {"ha", "yo'q", "yoq", "ok", "test", "salom", "hello", "hi", "yo", "ha", "yep", "nope", "none"}
+
+def is_valid_name(text):
+    import re
+    text = text.strip()
+    if len(text) < 2 or len(text) > 30:
+        return False
+    if text.lower() in INVALID_WORDS:
+        return False
+    if not re.match(r"^[a-zA-ZʻʼА-Яа-яёЁ\'\-]+$", text):
+        return False
+    if any(c.isdigit() for c in text):
+        return False
+    return True
+
 async def wait_first_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
     first = update.message.text.strip()
-    if len(first) < 2:
-        await update.message.reply_text("❌ Ism juda qisqa. Qayta kiriting:")
+    if not is_valid_name(first):
+        await update.message.reply_text(
+            "❌ Ism noto'g'ri.\n\n"
+            "Faqat harf kiriting (masalan: *Abdulloh*)\n"
+            "Raqam, belgi yoki so'z bo'lmasin.",
+            parse_mode="Markdown"
+        )
         return WAIT_FIRST_NAME
     context.user_data["first_name"] = first
-    await update.message.reply_text(f"✅ Ism: *{first}*\n\nFamilyangizni kiriting:", parse_mode="Markdown")
+    await update.message.reply_text(f"✅ Ism: *{first}*\n\nFamilyangizni kiriting:\n_(Masalan: Xolmatov)_", parse_mode="Markdown")
     return WAIT_LAST_NAME
 
 async def wait_last_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
     last = update.message.text.strip()
-    if len(last) < 2:
-        await update.message.reply_text("❌ Familya juda qisqa. Qayta kiriting:")
+    if not is_valid_name(last):
+        await update.message.reply_text(
+            "❌ Familya noto'g'ri.\n\n"
+            "Faqat harf kiriting (masalan: *Xolmatov*)\n"
+            "Raqam, belgi yoki so'z bo'lmasin.",
+            parse_mode="Markdown"
+        )
         return WAIT_LAST_NAME
+    last = last.capitalize()
 
     first = context.user_data["first_name"]
     user_id = str(update.effective_user.id)
@@ -497,6 +527,45 @@ async def all_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
         save_data(data)
         await query.message.reply_text("✅ Testlar tozalandi!", reply_markup=teacher_menu())
 
+    elif cb == "clear_students":
+        keyboard = [[
+            InlineKeyboardButton("✅ Ha, tozala", callback_data="confirm_clear_students"),
+            InlineKeyboardButton("❌ Yo'q", callback_data="go_teacher_menu")
+        ]]
+        await query.message.reply_text(
+            "⚠️ Barcha o'quvchilar o'chirilsinmi?",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+
+    elif cb == "confirm_clear_students":
+        data["students"] = {}
+        save_data(data)
+        await query.message.reply_text("✅ O'quvchilar tozalandi!", reply_markup=teacher_menu())
+
+    elif cb == "delete_student":
+        if not data["students"]:
+            await query.message.reply_text("👥 Hali o'quvchi yo'q.", reply_markup=back_to_menu_btn("teacher"))
+            return
+        keyboard = []
+        for uid, s in data["students"].items():
+            name = f"{s.get('first_name','')} {s.get('last_name','')}"
+            keyboard.append([InlineKeyboardButton(f"❌ {name}", callback_data=f"del_student_{uid}")])
+        keyboard.append([InlineKeyboardButton("🔙 Orqaga", callback_data="go_teacher_menu")])
+        await query.message.reply_text(
+            "👤 O'chirish uchun o'quvchini tanlang:",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+
+    elif cb.startswith("del_student_"):
+        uid = cb.replace("del_student_", "")
+        if uid in data["students"]:
+            name = f"{data['students'][uid].get('first_name','')} {data['students'][uid].get('last_name','')}"
+            del data["students"][uid]
+            save_data(data)
+            await query.message.reply_text(f"✅ *{name}* o'chirildi.", parse_mode="Markdown", reply_markup=teacher_menu())
+        else:
+            await query.message.reply_text("O'quvchi topilmadi.", reply_markup=teacher_menu())
+
     # ============ O'QUVCHI CALLBACKLAR ============
     elif cb == "s_homeworks":
         if not data["homeworks"]:
@@ -615,22 +684,29 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         thinking = await update.message.reply_text("🤖 Javob tayyorlanmoqda...")
 
         try:
-            import anthropic
-            client = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY", ""))
-            response = client.messages.create(
-                model="claude-sonnet-4-6",
-                max_tokens=1000,
-                messages=[{
-                    "role": "user",
-                    "content": f"Sen matematika o'qituvchisissan. O'zbek tilida, sodda va tushunarli tushuntir, misollar kel: {text}"
+            import urllib.request
+            import json as _json
+            api_key = os.environ.get("GEMINI_API_KEY", "")
+            if not api_key:
+                raise Exception("API key yo'q")
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={api_key}"
+            payload = _json.dumps({
+                "contents": [{
+                    "parts": [{
+                        "text": f"Sen matematika o'qituvchisissan. O'zbek tilida, sodda va tushunarli tushuntir, misollar kel: {text}"
+                    }]
                 }]
-            )
-            answer = response.content[0].text
+            }).encode("utf-8")
+            req = urllib.request.Request(url, data=payload, headers={"Content-Type": "application/json"})
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                result = _json.loads(resp.read().decode())
+            answer = result["candidates"][0]["content"]["parts"][0]["text"]
         except Exception as e:
             answer = (
                 "🤖 AI hozir ishlamayapti.\n\n"
-                "Sabab: ANTHROPIC_API_KEY sozlanmagan.\n"
-                "Railway → Variables bo'limiga ANTHROPIC_API_KEY qo'shing."
+                "Sabab: GEMINI_API_KEY sozlanmagan.\n"
+                "Railway → Variables → GEMINI_API_KEY qo'shing.\n"
+                "Bepul key: aistudio.google.com"
             )
 
         await thinking.delete()
