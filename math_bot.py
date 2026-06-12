@@ -1,6 +1,8 @@
 import logging
 import json
 import os
+import asyncio
+from datetime import datetime
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application, CommandHandler, MessageHandler,
@@ -19,15 +21,14 @@ logger = logging.getLogger(__name__)
 
 # Conversation states
 (
-    WAIT_STUDENT_CODE, WAIT_STUDENT_NAME,
+    WAIT_FIRST_NAME, WAIT_LAST_NAME,
     ADD_HOMEWORK_TITLE, ADD_HOMEWORK_DESC, ADD_HOMEWORK_DEADLINE,
     ADD_VIDEO_TITLE, ADD_VIDEO_LINK, ADD_VIDEO_TOPIC,
-    ADD_TEST_QUESTION, ADD_TEST_OPTIONS, ADD_TEST_ANSWER,
-    WAIT_CONFIRM_DELETE, WAIT_STUDENT_QUESTION
-) = range(13)
+    ADD_TEST_NAME, ADD_TEST_TIME, ADD_TEST_BULK,
+) = range(11)
 
 # ============================================================
-#  MA'LUMOTLAR BAZASI (JSON fayl)
+#  MA'LUMOTLAR BAZASI
 # ============================================================
 def load_data():
     if os.path.exists(DATA_FILE):
@@ -38,7 +39,6 @@ def load_data():
         "homeworks": [],
         "videos": [],
         "tests": [],
-        "class_code": "MATH2024"
     }
 
 def save_data(data):
@@ -48,11 +48,11 @@ def save_data(data):
 def is_teacher(user_id):
     return user_id == TEACHER_ID
 
-def is_student(user_id, data):
+def is_registered(user_id, data):
     return str(user_id) in data["students"]
 
 # ============================================================
-#  BOSH MENYULAR
+#  MENYULAR
 # ============================================================
 def teacher_menu():
     keyboard = [
@@ -60,12 +60,10 @@ def teacher_menu():
          InlineKeyboardButton("🎥 Video qo'shish", callback_data="add_video")],
         [InlineKeyboardButton("📝 Test yaratish", callback_data="add_test"),
          InlineKeyboardButton("👥 O'quvchilar", callback_data="view_students")],
-        [InlineKeyboardButton("📋 Barcha vazifalar", callback_data="view_homeworks"),
-         InlineKeyboardButton("🎬 Barcha videolar", callback_data="view_videos")],
+        [InlineKeyboardButton("📋 Vazifalar", callback_data="view_homeworks"),
+         InlineKeyboardButton("🎬 Videolar", callback_data="view_videos")],
         [InlineKeyboardButton("📊 Test natijalari", callback_data="test_results"),
-         InlineKeyboardButton("🏆 Reyting", callback_data="view_rating")],
-        [InlineKeyboardButton("💬 O'quvchi savollari", callback_data="view_questions"),
-         InlineKeyboardButton("🔑 Sinf kodi", callback_data="class_code")],
+         InlineKeyboardButton("🗑 Testlarni tozala", callback_data="clear_tests")],
     ]
     return InlineKeyboardMarkup(keyboard)
 
@@ -75,11 +73,13 @@ def student_menu():
          InlineKeyboardButton("🎥 Video darslar", callback_data="s_videos")],
         [InlineKeyboardButton("📝 Testlar", callback_data="s_tests"),
          InlineKeyboardButton("🤖 AI yordam", callback_data="s_ai")],
-        [InlineKeyboardButton("📊 Mening natijalarim", callback_data="s_results"),
-         InlineKeyboardButton("🏆 Reyting", callback_data="s_rating")],
-        [InlineKeyboardButton("💬 O'qituvchiga savol", callback_data="s_ask_teacher")],
+        [InlineKeyboardButton("📊 Natijalarim", callback_data="s_results")],
     ]
     return InlineKeyboardMarkup(keyboard)
+
+def back_to_menu_btn(role="student"):
+    cb = "go_student_menu" if role == "student" else "go_teacher_menu"
+    return InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Bosh menyu", callback_data=cb)]])
 
 # ============================================================
 #  /start
@@ -90,64 +90,69 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if is_teacher(user_id):
         await update.message.reply_text(
-            "👨‍🏫 *O'qituvchi paneli*\n\nAssalomu alaykum! Nima qilmoqchisiz?",
+            "👨‍🏫 *O'qituvchi paneli*\n\nAssalomu alaykum, Rashidbek domla!",
             parse_mode="Markdown",
             reply_markup=teacher_menu()
         )
         return ConversationHandler.END
 
-    if is_student(user_id, data):
-        name = data["students"][str(user_id)]["name"]
+    if is_registered(user_id, data):
+        s = data["students"][str(user_id)]
+        name = f"{s['first_name']} {s['last_name']}"
         await update.message.reply_text(
-            f"👋 Xush kelibsiz, *{name}*!\n\nNima qilmoqchisiz?",
+            f"👋 Xush kelibsiz, *{name}*!",
             parse_mode="Markdown",
             reply_markup=student_menu()
         )
         return ConversationHandler.END
 
     await update.message.reply_text(
-        "🏫 *Biz bilan A+ natijaga erishing!*\n\n"
-        "Ismingizni kiriting:",
+        "🏫 *Matematika 10-11 sinf*\n\n"
+        "Ro'yxatdan o'tish uchun ismingizni kiriting:",
         parse_mode="Markdown"
     )
-    return WAIT_STUDENT_NAME
+    return WAIT_FIRST_NAME
 
 # ============================================================
-#  O'QUVCHI KIRISHI
+#  RO'YXATDAN O'TISH
 # ============================================================
-async def student_enter_code(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    data = load_data()
-    code = update.message.text.strip().upper()
+async def wait_first_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    first = update.message.text.strip()
+    if len(first) < 2:
+        await update.message.reply_text("❌ Ism juda qisqa. Qayta kiriting:")
+        return WAIT_FIRST_NAME
+    context.user_data["first_name"] = first
+    await update.message.reply_text(f"✅ Ism: *{first}*\n\nFamilyangizni kiriting:", parse_mode="Markdown")
+    return WAIT_LAST_NAME
 
-    if code == data["class_code"].upper():
-        context.user_data["code_ok"] = True
-        await update.message.reply_text("✅ Kod to'g'ri! Ismingizni kiriting:")
-        return WAIT_STUDENT_NAME
-    else:
-        await update.message.reply_text("❌ Noto'g'ri kod. Qayta urinib ko'ring:")
-        return WAIT_STUDENT_CODE
+async def wait_last_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    last = update.message.text.strip()
+    if len(last) < 2:
+        await update.message.reply_text("❌ Familya juda qisqa. Qayta kiriting:")
+        return WAIT_LAST_NAME
 
-async def student_enter_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    name = update.message.text.strip()
+    first = context.user_data["first_name"]
     user_id = str(update.effective_user.id)
     data = load_data()
 
     data["students"][user_id] = {
-        "name": name,
+        "first_name": first,
+        "last_name": last,
         "username": update.effective_user.username or "",
+        "registered_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
         "test_results": {}
     }
     save_data(data)
 
     await update.message.reply_text(
-        f"🎉 Xush kelibsiz, *{name}*!\nSiz muvaffaqiyatli ro'yxatdan o'tdingiz.",
+        f"🎉 *{first} {last}*, muvaffaqiyatli ro'yxatdan o'tdingiz!\n\nXush kelibsiz!",
         parse_mode="Markdown",
         reply_markup=student_menu()
     )
     return ConversationHandler.END
 
 # ============================================================
-#  O'QITUVCHI — VAZIFA QO'SHISH
+#  O'QITUVCHI — VAZIFA
 # ============================================================
 async def add_homework_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -162,7 +167,7 @@ async def add_homework_title(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 async def add_homework_desc(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["hw_desc"] = update.message.text.strip()
-    await update.message.reply_text("📅 Muddat kiriting (masalan: 15-iyun yoki 3 kun):")
+    await update.message.reply_text("📅 Muddatni kiriting (masalan: 15-iyun):")
     return ADD_HOMEWORK_DEADLINE
 
 async def add_homework_deadline(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -177,12 +182,10 @@ async def add_homework_deadline(update: Update, context: ContextTypes.DEFAULT_TY
     save_data(data)
 
     await update.message.reply_text(
-        f"✅ Vazifa qo'shildi!\n\n"
-        f"📚 *{hw['title']}*\n{hw['desc']}\n📅 Muddat: {hw['deadline']}",
+        f"✅ Vazifa qo'shildi!\n\n📚 *{hw['title']}*\n{hw['desc']}\n📅 {hw['deadline']}",
         parse_mode="Markdown",
         reply_markup=teacher_menu()
     )
-
     for uid in data["students"]:
         try:
             await context.bot.send_message(
@@ -192,11 +195,10 @@ async def add_homework_deadline(update: Update, context: ContextTypes.DEFAULT_TY
             )
         except:
             pass
-
     return ConversationHandler.END
 
 # ============================================================
-#  O'QITUVCHI — VIDEO QO'SHISH
+#  O'QITUVCHI — VIDEO
 # ============================================================
 async def add_video_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -206,7 +208,7 @@ async def add_video_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def add_video_title(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["v_title"] = update.message.text.strip()
-    await update.message.reply_text("🔗 Video havolasini kiriting (YouTube yoki boshqa):")
+    await update.message.reply_text("🔗 Video havolasini kiriting (YouTube):")
     return ADD_VIDEO_LINK
 
 async def add_video_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -226,11 +228,10 @@ async def add_video_topic(update: Update, context: ContextTypes.DEFAULT_TYPE):
     save_data(data)
 
     await update.message.reply_text(
-        f"✅ Video qo'shildi!\n\n🎥 *{video['title']}*\n📖 Mavzu: {video['topic']}\n🔗 {video['link']}",
+        f"✅ Video qo'shildi!\n\n🎥 *{video['title']}*\n📖 {video['topic']}\n🔗 {video['link']}",
         parse_mode="Markdown",
         reply_markup=teacher_menu()
     )
-
     for uid in data["students"]:
         try:
             await context.bot.send_message(
@@ -240,44 +241,57 @@ async def add_video_topic(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
         except:
             pass
-
     return ConversationHandler.END
 
 # ============================================================
-#  O'QITUVCHI — TEST YARATISH
+#  O'QITUVCHI — TEST (BULK)
 # ============================================================
 async def add_test_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     await query.message.reply_text(
-        "📝 *Test yaratish*\n\n"
-        "Avval test nomini kiriting:\n"
-        "Masalan: _Planimetriya — Burchaklar_",
+        "📝 Test nomini kiriting:\nMasalan: _Planimetriya — Burchaklar_",
         parse_mode="Markdown"
     )
-    return ADD_TEST_QUESTION
+    return ADD_TEST_NAME
 
-async def add_test_question(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not context.user_data.get("test_title"):
-        context.user_data["test_title"] = update.message.text.strip()
-        await update.message.reply_text(
-            "✅ Nom qabul qilindi!\n\n"
-            "Endi barcha savollarni *bir xabarda* yuboring:\n\n"
-            "📋 *Format:*\n"
-            "```\n"
-            "1. Savol matni\n"
-            "A) variant\nB) variant\nC) variant\nD) variant\n"
-            "To'g'ri: A\n\n"
-            "2. Savol matni\n"
-            "A) variant\nB) variant\nC) variant\nD) variant\n"
-            "To'g'ri: B\n"
-            "```",
-            parse_mode="Markdown"
-        )
-        return ADD_TEST_OPTIONS
-    return ADD_TEST_OPTIONS
+async def add_test_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data["test_title"] = update.message.text.strip()
+    await update.message.reply_text(
+        "⏱ Test vaqtini kiriting (daqiqada):\nMasalan: *20*",
+        parse_mode="Markdown"
+    )
+    return ADD_TEST_TIME
 
-async def add_test_options(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def add_test_time(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        minutes = int(update.message.text.strip())
+        if minutes < 1 or minutes > 180:
+            raise ValueError
+        context.user_data["test_time"] = minutes
+    except:
+        await update.message.reply_text("❌ Noto'g'ri. Faqat raqam kiriting (1-180):")
+        return ADD_TEST_TIME
+
+    await update.message.reply_text(
+        f"✅ Vaqt: *{context.user_data['test_time']} daqiqa*\n\n"
+        "Endi barcha savollarni *bir xabarda* yuboring:\n\n"
+        "📋 *Format:*\n"
+        "```\n"
+        "1. Savol matni\n"
+        "A) variant\n"
+        "B) variant\n"
+        "C) variant\n"
+        "D) variant\n"
+        "To'g'ri: A\n\n"
+        "2. Savol matni\n"
+        "...\n"
+        "```",
+        parse_mode="Markdown"
+    )
+    return ADD_TEST_BULK
+
+async def add_test_bulk(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
     questions = []
     blocks = []
@@ -295,22 +309,20 @@ async def add_test_options(update: Update, context: ContextTypes.DEFAULT_TYPE):
         blocks.append(current)
 
     for block in blocks:
-        if not block:
-            continue
         q_text = ""
         options_lines = []
         answer = ""
         for line in block:
-            if line and line[0].isdigit() and "." in line[:3]:
-                q_text = line.split(".", 1)[1].strip()
+            if line and line[0].isdigit() and ("." in line[:3] or ")" in line[:3]):
+                q_text = line.split(".", 1)[-1].split(")", 1)[-1].strip()
             elif line.upper().startswith(("A)", "B)", "C)", "D)")):
                 options_lines.append(line)
             elif "to'g'ri" in line.lower() or "togri" in line.lower():
                 parts = line.split(":")
                 if len(parts) > 1:
-                    answer = parts[1].strip().upper()
+                    answer = parts[1].strip().upper()[0] if parts[1].strip() else ""
 
-        if q_text and options_lines and answer:
+        if q_text and options_lines and answer in ["A", "B", "C", "D"]:
             questions.append({
                 "q": q_text,
                 "options": "\n".join(options_lines),
@@ -319,269 +331,174 @@ async def add_test_options(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if not questions:
         await update.message.reply_text(
-            "❌ Format noto'g'ri. Qaytadan yuboring:\n\n"
-            "1. Savol\nA) ...\nB) ...\nC) ...\nD) ...\nTo'g'ri: A"
+            "❌ Savollar topilmadi. Format to'g'ri emasmi?\n\n"
+            "Namuna:\n1. Savol\nA) ...\nB) ...\nC) ...\nD) ...\nTo'g'ri: A"
         )
-        return ADD_TEST_OPTIONS
+        return ADD_TEST_BULK
 
     data = load_data()
     test = {
         "id": len(data["tests"]) + 1,
         "title": context.user_data.get("test_title", f"Test #{len(data['tests'])+1}"),
+        "time_limit": context.user_data.get("test_time", 20),
         "questions": questions
     }
     data["tests"].append(test)
     save_data(data)
     context.user_data.pop("test_title", None)
+    context.user_data.pop("test_time", None)
 
     await update.message.reply_text(
-        f"✅ *{test['title']}* yaratildi!\n{len(questions)} ta savol yuklandi.",
+        f"✅ *{test['title']}* yaratildi!\n"
+        f"📊 {len(questions)} ta savol | ⏱ {test['time_limit']} daqiqa",
         parse_mode="Markdown",
         reply_markup=teacher_menu()
     )
-
     for uid in data["students"]:
         try:
             await context.bot.send_message(
                 chat_id=int(uid),
-                text=f"📝 *Yangi test!*\n*{test['title']}* — {len(questions)} ta savol\n\nBotdan kirib ishlang!",
+                text=f"📝 *Yangi test!*\n\n*{test['title']}*\n"
+                     f"📊 {len(questions)} ta savol\n⏱ {test['time_limit']} daqiqa\n\nBotdan kirib ishlang!",
                 parse_mode="Markdown"
             )
         except:
             pass
-
-    return ConversationHandler.END
-
-async def add_test_answer(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return ConversationHandler.END
 
 # ============================================================
-#  O'CHIRISH FUNKSIYALARI
+#  TEST ISHLASH
 # ============================================================
-def make_delete_keyboard(items, id_prefix, back_callback):
-    """Har bir item uchun o'chirish tugmasi yasaydi."""
-    keyboard = []
-    for item in items:
-        title = item.get("title", f"ID: {item['id']}")
-        keyboard.append([
-            InlineKeyboardButton(f"🗑️ {title}", callback_data=f"del_{id_prefix}_{item['id']}")
-        ])
-    keyboard.append([InlineKeyboardButton("🔙 Orqaga", callback_data=back_callback)])
-    return InlineKeyboardMarkup(keyboard)
+async def send_test_question(message, context, test, idx):
+    q = test["questions"][idx]
+    total = len(test["questions"])
+    keyboard = [
+        [InlineKeyboardButton("A", callback_data="ta_A"),
+         InlineKeyboardButton("B", callback_data="ta_B")],
+        [InlineKeyboardButton("C", callback_data="ta_C"),
+         InlineKeyboardButton("D", callback_data="ta_D")],
+        [InlineKeyboardButton("🏳 Testni tugatish", callback_data="ta_finish")],
+    ]
+    await message.reply_text(
+        f"📝 *{test['title']}*\n"
+        f"Savol {idx+1}/{total} | ⏱ {test.get('time_limit', 20)} daqiqa\n\n"
+        f"*{q['q']}*\n\n{q['options']}",
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
 
-async def handle_delete(query, data, category, item_id):
-    """category: 'homeworks', 'videos', 'tests'"""
-    items = data[category]
-    original_len = len(items)
-    data[category] = [item for item in items if item["id"] != item_id]
+async def finish_test(message, context, data, user_id):
+    test = context.user_data.get("active_test")
+    score = context.user_data.get("test_score", 0)
+    total = len(test["questions"])
+    pct = round(score / total * 100) if total else 0
 
-    if len(data[category]) < original_len:
-        save_data(data)
-        return True
-    return False
+    if user_id not in data["students"]:
+        data["students"][user_id] = {"first_name": "?", "last_name": "?", "test_results": {}}
+    if "test_results" not in data["students"][user_id]:
+        data["students"][user_id]["test_results"] = {}
+    data["students"][user_id]["test_results"][str(test["id"])] = {
+        "score": score, "total": total, "percent": pct,
+        "date": datetime.now().strftime("%Y-%m-%d %H:%M")
+    }
+    save_data(data)
 
-# ============================================================
-#  CALLBACK — O'QITUVCHI
-# ============================================================
-async def teacher_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    data = load_data()
+    emoji = "🏆" if pct >= 80 else "👍" if pct >= 50 else "📚"
+    comment = "Zo'r natija!" if pct >= 80 else "Yaxshi!" if pct >= 50 else "Ko'proq o'qing!"
 
-    # ---- O'CHIRISH SO'ROVLARI ----
-    if query.data.startswith("del_hw_"):
-        item_id = int(query.data.split("_")[-1])
-        success = await handle_delete(query, data, "homeworks", item_id)
-        if success:
-            await query.message.reply_text("✅ Vazifa o'chirildi!")
-        else:
-            await query.message.reply_text("❌ Vazifa topilmadi.")
-        # Yangilangan ro'yxatni ko'rsat
-        data = load_data()
-        if not data["homeworks"]:
-            await query.message.reply_text("📚 Hali vazifa yo'q.", reply_markup=teacher_menu())
-        else:
-            keyboard = make_delete_keyboard(data["homeworks"], "hw", "view_homeworks_back")
-            lines = ["📚 *Barcha vazifalar:*\n"]
-            for hw in data["homeworks"]:
-                lines.append(f"• {hw['title']} — 📅 {hw['deadline']}")
-            await query.message.reply_text(
-                "\n".join(lines) + "\n\n🗑️ O'chirish uchun tugmani bosing:",
-                parse_mode="Markdown",
-                reply_markup=keyboard
-            )
+    context.user_data.pop("active_test", None)
+    context.user_data.pop("test_q_index", None)
+    context.user_data.pop("test_score", None)
 
-    elif query.data.startswith("del_vid_"):
-        item_id = int(query.data.split("_")[-1])
-        success = await handle_delete(query, data, "videos", item_id)
-        if success:
-            await query.message.reply_text("✅ Video o'chirildi!")
-        else:
-            await query.message.reply_text("❌ Video topilmadi.")
-        data = load_data()
-        if not data["videos"]:
-            await query.message.reply_text("🎥 Hali video yo'q.", reply_markup=teacher_menu())
-        else:
-            keyboard = make_delete_keyboard(data["videos"], "vid", "view_videos_back")
-            lines = ["🎥 *Barcha videolar:*\n"]
-            for v in data["videos"]:
-                lines.append(f"• {v['title']} — {v['link']}")
-            await query.message.reply_text(
-                "\n".join(lines) + "\n\n🗑️ O'chirish uchun tugmani bosing:",
-                parse_mode="Markdown",
-                reply_markup=keyboard
-            )
-
-    elif query.data.startswith("del_test_"):
-        item_id = int(query.data.split("_")[-1])
-        success = await handle_delete(query, data, "tests", item_id)
-        if success:
-            await query.message.reply_text("✅ Test o'chirildi!")
-        else:
-            await query.message.reply_text("❌ Test topilmadi.")
-        data = load_data()
-        if not data["tests"]:
-            await query.message.reply_text("📝 Hali test yo'q.", reply_markup=teacher_menu())
-        else:
-            keyboard = make_delete_keyboard(data["tests"], "test", "test_results")
-            lines = ["📝 *Barcha testlar:*\n"]
-            for t in data["tests"]:
-                lines.append(f"• {t['title']} — {len(t['questions'])} savol")
-            await query.message.reply_text(
-                "\n".join(lines) + "\n\n🗑️ O'chirish uchun tugmani bosing:",
-                parse_mode="Markdown",
-                reply_markup=keyboard
-            )
-
-    # ---- KO'RISH ----
-    elif query.data == "view_students":
-        if not data["students"]:
-            text = "👥 Hali o'quvchi yo'q."
-            await query.message.reply_text(text, parse_mode="Markdown", reply_markup=teacher_menu())
-        else:
-            lines = ["👥 *O'quvchilar ro'yxati:*\n"]
-            for i, (uid, s) in enumerate(data["students"].items(), 1):
-                uname = f"@{s['username']}" if s.get("username") else "username yo'q"
-                lines.append(f"{i}. *{s['name']}* — {uname}")
-            await query.message.reply_text("\n".join(lines), parse_mode="Markdown", reply_markup=teacher_menu())
-
-    elif query.data in ("view_homeworks", "view_homeworks_back"):
-        if not data["homeworks"]:
-            await query.message.reply_text("📚 Hali vazifa yo'q.", reply_markup=teacher_menu())
-        else:
-            keyboard = make_delete_keyboard(data["homeworks"], "hw", "view_homeworks_back")
-            lines = ["📚 *Barcha vazifalar:*\n"]
-            for hw in data["homeworks"]:
-                lines.append(f"• *{hw['title']}* — 📅 {hw['deadline']}\n  {hw['desc']}")
-            await query.message.reply_text(
-                "\n".join(lines) + "\n\n🗑️ O'chirish uchun tugmani bosing:",
-                parse_mode="Markdown",
-                reply_markup=keyboard
-            )
-
-    elif query.data in ("view_videos", "view_videos_back"):
-        if not data["videos"]:
-            await query.message.reply_text("🎥 Hali video yo'q.", reply_markup=teacher_menu())
-        else:
-            keyboard = make_delete_keyboard(data["videos"], "vid", "view_videos_back")
-            lines = ["🎥 *Barcha videolar:*\n"]
-            for v in data["videos"]:
-                lines.append(f"• *{v['title']}* — 📖 {v['topic']}\n  🔗 {v['link']}")
-            await query.message.reply_text(
-                "\n".join(lines) + "\n\n🗑️ O'chirish uchun tugmani bosing:",
-                parse_mode="Markdown",
-                reply_markup=keyboard
-            )
-
-    elif query.data == "test_results":
-        # Natijalar + testlarni o'chirish
-        lines = ["📊 *Test natijalari:*\n"]
-        for uid, s in data["students"].items():
-            if s.get("test_results"):
-                for test_id, result in s["test_results"].items():
-                    lines.append(f"👤 {s['name']} — Test {test_id}: {result['score']}/{result['total']}")
-        if len(lines) == 1:
-            lines.append("Hali natija yo'q.")
-
-        # Testlarni o'chirish tugmasi
-        if data["tests"]:
-            keyboard = make_delete_keyboard(data["tests"], "test", "test_results")
-            test_lines = ["\n📝 *Testlarni boshqarish:*"]
-            for t in data["tests"]:
-                test_lines.append(f"• {t['title']} ({len(t['questions'])} savol)")
-            await query.message.reply_text(
-                "\n".join(lines) + "\n".join(test_lines) + "\n\n🗑️ O'chirish uchun bosing:",
-                parse_mode="Markdown",
-                reply_markup=keyboard
-            )
-        else:
-            await query.message.reply_text("\n".join(lines), parse_mode="Markdown", reply_markup=teacher_menu())
-
-    elif query.data == "view_rating":
-        lines = ["🏆 *Reyting (Test natijalari bo'yicha):*\n"]
-        scores = []
-        for uid, s in data["students"].items():
-            results = s.get("test_results", {})
-            if results:
-                total_score = sum(r["score"] for r in results.values())
-                total_max = sum(r["total"] for r in results.values())
-                pct = round(total_score / total_max * 100) if total_max > 0 else 0
-                scores.append((s["name"], total_score, total_max, pct))
-        scores.sort(key=lambda x: x[3], reverse=True)
-        if not scores:
-            lines.append("Hali natija yo'q.")
-        else:
-            medals = ["🥇", "🥈", "🥉"]
-            for i, (name, score, total, pct) in enumerate(scores):
-                medal = medals[i] if i < 3 else f"{i+1}."
-                lines.append(f"{medal} *{name}* — {score}/{total} ({pct}%)")
-        await query.message.reply_text("\n".join(lines), parse_mode="Markdown", reply_markup=teacher_menu())
-
-    elif query.data == "view_questions":
-        questions = data.get("student_questions", [])
-        if not questions:
-            await query.message.reply_text("💬 Hali savol yo'q.", reply_markup=teacher_menu())
-        else:
-            lines = ["💬 *O'quvchilar savollari:*\n"]
-            keyboard = []
-            for q_item in questions[-10:]:  # oxirgi 10 ta
-                lines.append(f"👤 *{q_item['name']}*: {q_item['question']}")
-                keyboard.append([InlineKeyboardButton(
-                    f"↩️ {q_item['name']} ga javob",
-                    callback_data=f"reply_q_{q_item['uid']}"
-                )])
-            keyboard.append([InlineKeyboardButton("🔙 Orqaga", callback_data="back_teacher")])
-            await query.message.reply_text(
-                "\n".join(lines),
-                parse_mode="Markdown",
-                reply_markup=InlineKeyboardMarkup(keyboard)
-            )
-
-    elif query.data.startswith("reply_q_"):
-        uid = query.data.split("_")[-1]
-        context.user_data["reply_to_uid"] = uid
-        await query.message.reply_text(
-            "✏️ O'quvchiga javobingizni yozing:"
-        )
-
-    elif query.data == "back_teacher":
-        await query.message.reply_text("O'qituvchi paneli:", reply_markup=teacher_menu())
-        await query.message.reply_text(
-            f"🔑 *Sinf kodi:* `{data['class_code']}`\n\nO'quvchilarga bu kodni bering.",
-            parse_mode="Markdown",
-            reply_markup=teacher_menu()
-        )
+    await message.reply_text(
+        f"{emoji} *Test yakunlandi!*\n\n"
+        f"📊 Natija: *{score}/{total}* ({pct}%)\n"
+        f"💬 {comment}",
+        parse_mode="Markdown",
+        reply_markup=student_menu()
+    )
 
 # ============================================================
-#  CALLBACK — O'QUVCHI
+#  CALLBACK HANDLERLAR
 # ============================================================
-async def student_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def all_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     data = load_data()
     user_id = str(query.from_user.id)
+    cb = query.data
 
-    if query.data == "s_homeworks":
+    # --- Menyu navigatsiya ---
+    if cb == "go_student_menu":
+        await query.message.reply_text("📱 Bosh menyu:", reply_markup=student_menu())
+        return
+    if cb == "go_teacher_menu":
+        await query.message.reply_text("👨‍🏫 O'qituvchi paneli:", reply_markup=teacher_menu())
+        return
+
+    # ============ O'QITUVCHI CALLBACKLAR ============
+    if cb == "view_students":
+        if not data["students"]:
+            text = "👥 Hali o'quvchi yo'q."
+        else:
+            lines = [f"👥 *O'quvchilar ({len(data['students'])} ta):*\n"]
+            for i, (uid, s) in enumerate(data["students"].items(), 1):
+                name = f"{s.get('first_name','')} {s.get('last_name','')}"
+                uname = f"@{s['username']}" if s.get("username") else ""
+                lines.append(f"{i}. *{name}* {uname}")
+            text = "\n".join(lines)
+        await query.message.reply_text(text, parse_mode="Markdown", reply_markup=back_to_menu_btn("teacher"))
+
+    elif cb == "view_homeworks":
+        if not data["homeworks"]:
+            text = "📚 Hali vazifa yo'q."
+        else:
+            lines = ["📚 *Barcha vazifalar:*\n"]
+            for hw in data["homeworks"]:
+                lines.append(f"*{hw['id']}.* {hw['title']} — 📅 {hw['deadline']}")
+            text = "\n".join(lines)
+        await query.message.reply_text(text, parse_mode="Markdown", reply_markup=back_to_menu_btn("teacher"))
+
+    elif cb == "view_videos":
+        if not data["videos"]:
+            text = "🎥 Hali video yo'q."
+        else:
+            lines = ["🎥 *Barcha videolar:*\n"]
+            for v in data["videos"]:
+                lines.append(f"*{v['id']}.* {v['title']} — {v['link']}")
+            text = "\n".join(lines)
+        await query.message.reply_text(text, parse_mode="Markdown", reply_markup=back_to_menu_btn("teacher"))
+
+    elif cb == "test_results":
+        lines = ["📊 *Test natijalari:*\n"]
+        found = False
+        for uid, s in data["students"].items():
+            name = f"{s.get('first_name','')} {s.get('last_name','')}"
+            for tid, r in s.get("test_results", {}).items():
+                test_name = next((t["title"] for t in data["tests"] if str(t["id"]) == tid), f"Test {tid}")
+                lines.append(f"👤 {name} | {test_name}: {r['score']}/{r['total']} ({r.get('percent',0)}%)")
+                found = True
+        if not found:
+            lines.append("Hali natija yo'q.")
+        await query.message.reply_text("\n".join(lines), parse_mode="Markdown", reply_markup=back_to_menu_btn("teacher"))
+
+    elif cb == "clear_tests":
+        keyboard = [[
+            InlineKeyboardButton("✅ Ha, tozala", callback_data="confirm_clear_tests"),
+            InlineKeyboardButton("❌ Yo'q", callback_data="go_teacher_menu")
+        ]]
+        await query.message.reply_text(
+            "⚠️ Barcha testlar o'chirilsinmi?",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+
+    elif cb == "confirm_clear_tests":
+        data["tests"] = []
+        save_data(data)
+        await query.message.reply_text("✅ Testlar tozalandi!", reply_markup=teacher_menu())
+
+    # ============ O'QUVCHI CALLBACKLAR ============
+    elif cb == "s_homeworks":
         if not data["homeworks"]:
             text = "📚 Hali vazifa yo'q."
         else:
@@ -589,9 +506,9 @@ async def student_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
             for hw in data["homeworks"]:
                 lines.append(f"*{hw['id']}.* {hw['title']}\n   📝 {hw['desc']}\n   📅 Muddat: {hw['deadline']}\n")
             text = "\n".join(lines)
-        await query.message.reply_text(text, parse_mode="Markdown", reply_markup=student_menu())
+        await query.message.reply_text(text, parse_mode="Markdown", reply_markup=back_to_menu_btn())
 
-    elif query.data == "s_videos":
+    elif cb == "s_videos":
         if not data["videos"]:
             text = "🎥 Hali video yo'q."
         else:
@@ -599,53 +516,56 @@ async def student_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
             for v in data["videos"]:
                 lines.append(f"*{v['id']}.* {v['title']}\n   📖 {v['topic']}\n   🔗 {v['link']}\n")
             text = "\n".join(lines)
-        await query.message.reply_text(text, parse_mode="Markdown", reply_markup=student_menu())
+        await query.message.reply_text(text, parse_mode="Markdown", reply_markup=back_to_menu_btn())
 
-    elif query.data == "s_tests":
+    elif cb == "s_tests":
         if not data["tests"]:
-            await query.message.reply_text("📝 Hali test yo'q.", reply_markup=student_menu())
+            await query.message.reply_text("📝 Hali test yo'q.", reply_markup=back_to_menu_btn())
             return
         keyboard = []
         for t in data["tests"]:
             keyboard.append([InlineKeyboardButton(
-                f"📝 {t['title']} ({len(t['questions'])} savol)",
+                f"📝 {t['title']} ({len(t['questions'])} savol | ⏱{t.get('time_limit',20)} daq)",
                 callback_data=f"take_test_{t['id']}"
             )])
-        keyboard.append([InlineKeyboardButton("🔙 Orqaga", callback_data="s_back")])
+        keyboard.append([InlineKeyboardButton("🔙 Bosh menyu", callback_data="go_student_menu")])
         await query.message.reply_text(
             "📝 *Testlar:*\nQaysi testni ishlaysiz?",
             parse_mode="Markdown",
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
 
-    elif query.data.startswith("take_test_"):
-        test_id = int(query.data.split("_")[-1])
+    elif cb.startswith("take_test_"):
+        test_id = int(cb.split("_")[-1])
         test = next((t for t in data["tests"] if t["id"] == test_id), None)
         if not test:
-            await query.message.reply_text("Test topilmadi.")
+            await query.message.reply_text("Test topilmadi.", reply_markup=back_to_menu_btn())
             return
-
         context.user_data["active_test"] = test
         context.user_data["test_q_index"] = 0
         context.user_data["test_score"] = 0
-
+        context.user_data["test_start"] = datetime.now().isoformat()
         await send_test_question(query.message, context, test, 0)
 
-    elif query.data.startswith("test_ans_"):
-        parts = query.data.split("_")
-        answer = parts[2]
+    elif cb.startswith("ta_"):
         test = context.user_data.get("active_test")
-        idx = context.user_data.get("test_q_index", 0)
-
         if not test:
+            await query.message.reply_text("Test topilmadi.", reply_markup=student_menu())
             return
 
+        if cb == "ta_finish":
+            await finish_test(query.message, context, data, user_id)
+            return
+
+        answer = cb.split("_")[1]
+        idx = context.user_data.get("test_q_index", 0)
         correct = test["questions"][idx]["answer"]
+
         if answer == correct:
             context.user_data["test_score"] = context.user_data.get("test_score", 0) + 1
-            await query.message.reply_text(f"✅ To'g'ri!")
+            await query.message.reply_text("✅ To'g'ri!")
         else:
-            await query.message.reply_text(f"❌ Noto'g'ri! To'g'ri javob: {correct}")
+            await query.message.reply_text(f"❌ Noto'g'ri! To'g'ri javob: *{correct}*", parse_mode="Markdown")
 
         next_idx = idx + 1
         context.user_data["test_q_index"] = next_idx
@@ -653,40 +573,19 @@ async def student_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if next_idx < len(test["questions"]):
             await send_test_question(query.message, context, test, next_idx)
         else:
-            score = context.user_data["test_score"]
-            total = len(test["questions"])
-            pct = round(score / total * 100)
+            await finish_test(query.message, context, data, user_id)
 
-            data = load_data()
-            if user_id not in data["students"]:
-                data["students"][user_id] = {"name": "Noma'lum", "test_results": {}}
-            if "test_results" not in data["students"][user_id]:
-                data["students"][user_id]["test_results"] = {}
-            data["students"][user_id]["test_results"][str(test["id"])] = {
-                "score": score, "total": total
-            }
-            save_data(data)
-
-            emoji = "🏆" if pct >= 80 else "👍" if pct >= 50 else "📚"
-            await query.message.reply_text(
-                f"{emoji} *Test yakunlandi!*\n\n"
-                f"Natija: *{score}/{total}* ({pct}%)\n\n"
-                f"{'Zo\'r natija!' if pct >= 80 else 'Ko\'proq o\'qing!' if pct < 50 else 'Yaxshi!'}",
-                parse_mode="Markdown",
-                reply_markup=student_menu()
-            )
-
-    elif query.data == "s_ai":
+    elif cb == "s_ai":
+        context.user_data["ai_mode"] = True
         await query.message.reply_text(
             "🤖 *AI matematik yordamchi*\n\n"
-            "Matematik savolingizni yozing, men tushuntiraman!\n\n"
-            "Masalan:\n• sin(60°) nima?\n• x² - 5x + 6 = 0 ni yeching\n• Integral nima?",
-            parse_mode="Markdown"
+            "Savolingizni yozing, men tushuntiraman!\n\n"
+            "Masalan:\n• sin(60°) nima?\n• x²-5x+6=0 ni yeching\n• Integral nima?",
+            parse_mode="Markdown",
+            reply_markup=back_to_menu_btn()
         )
-        context.user_data["ai_mode"] = True
 
-    elif query.data == "s_results":
-        data = load_data()
+    elif cb == "s_results":
         student = data["students"].get(user_id, {})
         results = student.get("test_results", {})
         if not results:
@@ -694,58 +593,13 @@ async def student_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             lines = ["📊 *Mening natijalarim:*\n"]
             for tid, r in results.items():
-                pct = round(r['score'] / r['total'] * 100)
-                lines.append(f"Test {tid}: {r['score']}/{r['total']} ({pct}%)")
+                test_name = next((t["title"] for t in data["tests"] if str(t["id"]) == tid), f"Test {tid}")
+                lines.append(f"📝 {test_name}\n   ✅ {r['score']}/{r['total']} ({r.get('percent',0)}%) | 📅 {r.get('date','')}\n")
             text = "\n".join(lines)
-        await query.message.reply_text(text, parse_mode="Markdown", reply_markup=student_menu())
-
-    elif query.data == "s_rating":
-        lines = ["🏆 *Reyting:*\n"]
-        scores = []
-        for uid, s in data["students"].items():
-            results = s.get("test_results", {})
-            if results:
-                total_score = sum(r["score"] for r in results.values())
-                total_max = sum(r["total"] for r in results.values())
-                pct = round(total_score / total_max * 100) if total_max > 0 else 0
-                scores.append((s["name"], pct, uid))
-        scores.sort(key=lambda x: x[1], reverse=True)
-        if not scores:
-            lines.append("Hali hech kim test ishlamagan.")
-        else:
-            medals = ["🥇", "🥈", "🥉"]
-            for i, (name, pct, uid) in enumerate(scores):
-                medal = medals[i] if i < 3 else f"{i+1}."
-                you = " ← Siz" if uid == user_id else ""
-                lines.append(f"{medal} *{name}* — {pct}%{you}")
-        await query.message.reply_text("\n".join(lines), parse_mode="Markdown", reply_markup=student_menu())
-
-    elif query.data == "s_ask_teacher":
-        await query.message.reply_text(
-            "💬 O'qituvchiga savolingizni yozing:\n\n"
-            "_(Savol yuborganingizdan so'ng o'qituvchi javob beradi)_",
-            parse_mode="Markdown"
-        )
-        context.user_data["asking_teacher"] = True
-        await query.message.reply_text("Bosh menyu:", reply_markup=student_menu())
-
-async def send_test_question(message, context, test, idx):
-    q = test["questions"][idx]
-    total = len(test["questions"])
-    keyboard = [
-        [InlineKeyboardButton("A", callback_data="test_ans_A"),
-         InlineKeyboardButton("B", callback_data="test_ans_B")],
-        [InlineKeyboardButton("C", callback_data="test_ans_C"),
-         InlineKeyboardButton("D", callback_data="test_ans_D")],
-    ]
-    await message.reply_text(
-        f"📝 *Savol {idx+1}/{total}*\n\n{q['q']}\n\n{q['options']}",
-        parse_mode="Markdown",
-        reply_markup=InlineKeyboardMarkup(keyboard)
-    )
+        await query.message.reply_text(text, parse_mode="Markdown", reply_markup=back_to_menu_btn())
 
 # ============================================================
-#  MATN XABARLAR — AI YORDAM
+#  MATN XABARLAR — AI
 # ============================================================
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -753,89 +607,42 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = load_data()
 
     if is_teacher(user_id):
-        # O'qituvchi o'quvchiga javob bermoqda
-        if context.user_data.get("reply_to_uid"):
-            uid = context.user_data.pop("reply_to_uid")
-            try:
-                await context.bot.send_message(
-                    chat_id=int(uid),
-                    text=f"👨‍🏫 *O'qituvchidan javob:*\n\n{text}",
-                    parse_mode="Markdown"
-                )
-                await update.message.reply_text("✅ Javob yuborildi!", reply_markup=teacher_menu())
-            except:
-                await update.message.reply_text("❌ Xabar yuborishda xato.", reply_markup=teacher_menu())
-            return
         await update.message.reply_text("O'qituvchi paneli:", reply_markup=teacher_menu())
-        return
-
-    # O'quvchi o'qituvchiga savol yuboryapti
-    if context.user_data.get("asking_teacher"):
-        context.user_data["asking_teacher"] = False
-        student = data["students"].get(str(user_id), {})
-        name = student.get("name", "Noma'lum")
-
-        if "student_questions" not in data:
-            data["student_questions"] = []
-        data["student_questions"].append({
-            "uid": str(user_id),
-            "name": name,
-            "question": text
-        })
-        # Faqat oxirgi 50 ta savolni saqlash
-        data["student_questions"] = data["student_questions"][-50:]
-        save_data(data)
-
-        # O'qituvchiga xabar
-        try:
-            await context.bot.send_message(
-                chat_id=TEACHER_ID,
-                text=f"💬 *Yangi savol!*\n\n👤 *{name}*:\n{text}\n\n_(O'quvchilar savollari bo'limidan javob bering)_",
-                parse_mode="Markdown"
-            )
-        except:
-            pass
-
-        await update.message.reply_text(
-            "✅ Savolingiz o'qituvchiga yuborildi!\nTez orada javob olasiz.",
-            reply_markup=student_menu()
-        )
         return
 
     if context.user_data.get("ai_mode"):
         context.user_data["ai_mode"] = False
-        await update.message.reply_text("🤖 Savolingiz qabul qilindi, javob tayyorlanmoqda...")
+        thinking = await update.message.reply_text("🤖 Javob tayyorlanmoqda...")
 
         try:
-            import urllib.request
-            import json as _json
-            groq_key = os.environ.get("GROQ_API_KEY", "")
-            payload = _json.dumps({
-                "model": "llama3-8b-8192",
-                "messages": [
-                    {"role": "system", "content": "Sen matematika o'qituvchisissan. Faqat o'zbek tilida, sodda va tushunarli tushuntir, misollar keltir."},
-                    {"role": "user", "content": text}
-                ],
-                "max_tokens": 1000
-            }).encode("utf-8")
-            req = urllib.request.Request(
-                "https://api.groq.com/openai/v1/chat/completions",
-                data=payload,
-                headers={"Content-Type": "application/json", "Authorization": f"Bearer {groq_key}"}
+            import anthropic
+            client = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY", ""))
+            response = client.messages.create(
+                model="claude-sonnet-4-6",
+                max_tokens=1000,
+                messages=[{
+                    "role": "user",
+                    "content": f"Sen matematika o'qituvchisissan. O'zbek tilida, sodda va tushunarli tushuntir, misollar kel: {text}"
+                }]
             )
-            with urllib.request.urlopen(req) as resp:
-                result = _json.loads(resp.read().decode())
-            answer = result["choices"][0]["message"]["content"]
+            answer = response.content[0].text
         except Exception as e:
-            answer = "AI hozir ishlamayapti. Keyinroq urinib ko'ring."
+            answer = (
+                "🤖 AI hozir ishlamayapti.\n\n"
+                "Sabab: ANTHROPIC_API_KEY sozlanmagan.\n"
+                "Railway → Variables bo'limiga ANTHROPIC_API_KEY qo'shing."
+            )
 
+        await thinking.delete()
         await update.message.reply_text(answer, reply_markup=student_menu())
         return
 
-    if is_student(user_id, data):
+    if is_registered(user_id, data):
         await update.message.reply_text("Menyu:", reply_markup=student_menu())
     else:
-        await update.message.reply_text("Ismingizni kiriting:")
+        await update.message.reply_text(
+            "Ro'yxatdan o'tish uchun /start yuboring."
+        )
 
 # ============================================================
 #  ASOSIY
@@ -843,7 +650,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 def main():
     app = Application.builder().token(TOKEN).build()
 
-    conv_handler = ConversationHandler(
+    conv = ConversationHandler(
         entry_points=[
             CommandHandler("start", start),
             CallbackQueryHandler(add_homework_start, pattern="^add_homework$"),
@@ -851,33 +658,24 @@ def main():
             CallbackQueryHandler(add_test_start, pattern="^add_test$"),
         ],
         states={
-            WAIT_STUDENT_CODE: [MessageHandler(filters.TEXT & ~filters.COMMAND, student_enter_code)],
-            WAIT_STUDENT_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, student_enter_name)],
+            WAIT_FIRST_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, wait_first_name)],
+            WAIT_LAST_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, wait_last_name)],
             ADD_HOMEWORK_TITLE: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_homework_title)],
             ADD_HOMEWORK_DESC: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_homework_desc)],
             ADD_HOMEWORK_DEADLINE: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_homework_deadline)],
             ADD_VIDEO_TITLE: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_video_title)],
             ADD_VIDEO_LINK: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_video_link)],
             ADD_VIDEO_TOPIC: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_video_topic)],
-            ADD_TEST_QUESTION: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_test_question)],
-            ADD_TEST_OPTIONS: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_test_options)],
-            ADD_TEST_ANSWER: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_test_answer)],
+            ADD_TEST_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_test_name)],
+            ADD_TEST_TIME: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_test_time)],
+            ADD_TEST_BULK: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_test_bulk)],
         },
         fallbacks=[CommandHandler("start", start)],
         per_message=False,
     )
 
-    app.add_handler(conv_handler)
-
-    # O'qituvchi callbacklari — del_ pattern ham qo'shildi
-    app.add_handler(CallbackQueryHandler(
-        teacher_callbacks,
-        pattern="^(view_students|view_homeworks|view_homeworks_back|view_videos|view_videos_back|test_results|class_code|view_rating|view_questions|reply_q_.*|back_teacher|del_hw_.*|del_vid_.*|del_test_.*)$"
-    ))
-    app.add_handler(CallbackQueryHandler(
-        student_callbacks,
-        pattern="^(s_homeworks|s_videos|s_tests|s_results|s_ai|s_back|s_rating|s_ask_teacher|take_test_.*|test_ans_.*)$"
-    ))
+    app.add_handler(conv)
+    app.add_handler(CallbackQueryHandler(all_callbacks))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
     print("✅ Bot ishga tushdi!")
